@@ -10,9 +10,34 @@ import os
 import re
 import csv
 import sys
+import types
+
+# Python 3.13 shim for deprecated 'cgi' module used by feedparser
+if 'cgi' not in sys.modules:
+    cgi_mock = types.ModuleType("cgi")
+    def parse_header(line):
+        parts = line.split(";")
+        key = parts[0].strip()
+        params = {}
+        for p in parts[1:]:
+            if "=" in p:
+                parts2 = p.split("=", 1)
+                params[parts2[0].strip()] = parts2[1].strip().strip('"')
+        return key, params
+    cgi_mock.parse_header = parse_header
+    sys.modules["cgi"] = cgi_mock
+
 import json
 import time
 import random
+
+
+# Fix Windows console encoding for emoji logging
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

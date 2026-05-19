@@ -7,8 +7,15 @@ Author: Antigravity AI
 
 import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
+
+# Fix Windows console encoding for emoji logging
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import uvicorn
 from dotenv import load_dotenv
@@ -18,6 +25,7 @@ from pydantic import BaseModel, Field
 from pymongo import MongoClient, DESCENDING
 
 import yfinance
+import random
 
 load_dotenv()
 
@@ -51,8 +59,17 @@ fomo_col = None
 deals_col = None
 reel_col = None
 
+# Offline local mock database stores
+news_mock_db = []
+flow_mock_db = {}
+brief_mock_db = {}
+fomo_mock_db = {}
+deals_mock_db = []
+reel_mock_db = []
+
 if not MONGO_URI:
     print("⚠️ MONGO_URI environment variable not found. Running in server memory/mock DB mode.")
+
 else:
     try:
         client = MongoClient(MONGO_URI)
@@ -187,8 +204,13 @@ async def get_news(
 ):
     """Retrieve highly verified news and announcements."""
     if news_col is None:
-        # Resilient fallback mock database if Mongo is down
-        return []
+        filtered = news_mock_db
+        if company:
+            filtered = [x for x in filtered if x["company"] == company.upper()]
+        if include_corporate:
+            filtered = [x for x in filtered if x["corporate_action"]]
+        return filtered[skip:skip+limit]
+
         
     query = {}
     if company:
@@ -235,7 +257,7 @@ async def get_sentiment_timeline(company: str = Query(..., description="Stock sy
         # Resilient mock timeline
         today = datetime.now()
         return [
-            {"date": (today - timedelta(days=i)).strftime("%Y-%m-%d"), "sentiment": round(yfinance.random.uniform(0.1, 0.9), 2)}
+            {"date": (today - timedelta(days=i)).strftime("%Y-%m-%d"), "sentiment": round(random.uniform(0.1, 0.9), 2)}
             for i in reversed(range(7))
         ]
         
@@ -601,12 +623,7 @@ async def chat_interaction(payload: ChatPayload):
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         # Compile Chat History
-        contents = []
-        # Add system context as user/model pre-conditioning to bypass direct system prompt limitations if needed, or simply prefix the query.
-        contents.append(types.Content(
-            role="user",
-            parts=[types.Part.from_text(f"{system_prompt}\n\nUser Question: {message}")]
-        ))
+        contents = [f"{system_prompt}\n\nUser Question: {message}"]
         
         response = client.models.generate_content(
             model="gemini-1.5-flash",
@@ -623,7 +640,11 @@ async def chat_interaction(payload: ChatPayload):
 @app.post("/news", status_code=201, dependencies=[Depends(verify_api_key)])
 async def create_news_item(item: NewsArticle):
     if news_col is None:
-        raise HTTPException(status_code=503, detail="Database not configured")
+        if any(x for x in news_mock_db if x["id"] == item.id):
+            return {"status": "duplicate", "message": f"Article {item.id} already exists."}
+        news_mock_db.append(item.dict())
+        return {"status": "created", "id": item.id}
+
         
     # Check for duplicate
     existing = news_col.find_one({"id": item.id})
@@ -636,7 +657,10 @@ async def create_news_item(item: NewsArticle):
 @app.post("/market/flow", dependencies=[Depends(verify_api_key)])
 async def post_market_flow(payload: FlowItem):
     if flow_col is None:
-         raise HTTPException(status_code=503, detail="Database not configured")
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        flow_mock_db[today] = payload.dict()
+        return {"status": "success"}
+
          
     today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     flow_dict = payload.dict()
@@ -648,7 +672,10 @@ async def post_market_flow(payload: FlowItem):
 @app.post("/market/briefing", dependencies=[Depends(verify_api_key)])
 async def post_market_briefing(payload: DailyBriefingPayload):
     if brief_col is None:
-         raise HTTPException(status_code=503, detail="Database not configured")
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        brief_mock_db[today] = payload.content
+        return {"status": "success"}
+
          
     today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     brief_col.update_one(
@@ -661,7 +688,10 @@ async def post_market_briefing(payload: DailyBriefingPayload):
 @app.post("/market/fomo", dependencies=[Depends(verify_api_key)])
 async def post_market_fomo(payload: RetailFomoPayload):
     if fomo_col is None:
-         raise HTTPException(status_code=503, detail="Database not configured")
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        fomo_mock_db[today] = payload.tickers
+        return {"status": "success"}
+
          
     today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     fomo_col.update_one(
@@ -674,7 +704,10 @@ async def post_market_fomo(payload: RetailFomoPayload):
 @app.post("/whale/activity", dependencies=[Depends(verify_api_key)])
 async def post_whale_activity(payload: BlockDealsPayload):
     if deals_col is None:
-         raise HTTPException(status_code=503, detail="Database not configured")
+        for d in payload.deals:
+            deals_mock_db.append(d.dict())
+        return {"status": "success"}
+
          
     # Insert each block deal
     for d in payload.deals:
@@ -693,7 +726,12 @@ async def post_whale_activity(payload: BlockDealsPayload):
 @app.post("/content/reel", dependencies=[Depends(verify_api_key)])
 async def post_content_reel(payload: ReelScriptPayload):
     if reel_col is None:
-         raise HTTPException(status_code=503, detail="Database not configured")
+        reel_mock_db.append({
+            "script": payload.script,
+            "created_at": (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
+        })
+        return {"status": "success"}
+
          
     reel_col.insert_one({
         "script": payload.script,
@@ -708,4 +746,4 @@ import random
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
