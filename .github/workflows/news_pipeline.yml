@@ -1,0 +1,58 @@
+name: Stock Pulse India Intelligence Pipeline
+
+on:
+  schedule:
+    # Run every 15 minutes during Indian market hours (07:30 to 17:30 IST / 02:00 to 12:00 UTC) on weekdays
+    - cron: '*/15 2-11 * * 1-5'
+    # Run daily pre-market seed tasks at 07:15 IST / 01:45 UTC on weekdays
+    - cron: '45 1 * * 1-5'
+  workflow_dispatch: # Enable manual execution testing
+
+permissions:
+  contents: write # Crucial permission for committing state index files
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python Runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Scraper Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Execute Pipeline Core Orchestrator
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          python scripts/main.py
+
+      - name: Commit and Push State Progress Logs
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add scripts/posted_articles.json scripts/last_run_dates.json
+          # Check if there are changes before committing to prevent empty commit errors
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "automation: sync pipeline state progress indices [skip ci]"
+            git push
+            echo "✅ Pipeline progress state indexes pushed successfully to repository."
+          else
+            echo "ℹ️ No progress indexes changed in this run. Skipping commit."
+          fi

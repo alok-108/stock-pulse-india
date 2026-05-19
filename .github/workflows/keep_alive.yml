@@ -1,0 +1,22 @@
+name: Render Backend Keep-Alive Warmup
+
+on:
+  schedule:
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Enable manual execution testing
+
+jobs:
+  ping-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Live FastAPI Server
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "⚠️ BACKEND_URL secret is not set. Skipping keep-alive warmup."
+            exit 0
+          fi
+          echo "🌐 Sending warm-up ping request to: $BACKEND_URL/ping"
+          curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/ping" | grep -q "200" && echo "✅ Server is online and active!" || echo "⚠️ Warm-up ping returned non-200 response code."
